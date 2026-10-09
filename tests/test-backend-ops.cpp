@@ -5210,6 +5210,37 @@ struct test_mul_mat : public test_case {
     }
 };
 
+// GGML_OP_MUL_MAT with src1 precision F32: F32 x F32 must not be computed through a lower precision
+struct test_mul_mat_prec_f32 : public test_case {
+    const int64_t m;
+    const int64_t n;
+    const int64_t k;
+
+    std::string vars() override {
+        return VARS_TO_STR3(m, n, k);
+    }
+
+    double max_nmse_err() override {
+        return 1e-10;
+    }
+
+    test_mul_mat_prec_f32(int64_t m = 64, int64_t n = 32, int64_t k = 128)
+        : m(m), n(n), k(k) {}
+
+    ggml_tensor * build_graph(ggml_context * ctx) override {
+        ggml_tensor * a = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, k, m);
+        ggml_tensor * b = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, k, n);
+        ggml_set_name(a, "a");
+        ggml_set_name(b, "b");
+
+        ggml_tensor * out = ggml_mul_mat(ctx, a, b);
+        ggml_prec_set_src(out, GGML_PREC_F32, 1);
+        ggml_set_name(out, "out");
+
+        return out;
+    }
+};
+
 // GGML_HINT_SRC0_IS_HADAMARD
 struct test_mul_mat_hadamard : public test_mul_mat {
     test_mul_mat_hadamard(ggml_type type_a = GGML_TYPE_F32, ggml_type type_b = GGML_TYPE_F32,
@@ -10561,6 +10592,11 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_mul_mat(GGML_TYPE_F16, GGML_TYPE_F32, 1, 509, 2051, {1, 1}, {1, 1}));
     test_cases.emplace_back(new test_mul_mat(GGML_TYPE_F16, GGML_TYPE_F16, 1, 509, 2051, {1, 1}, {1, 1}));
 
+    for (int64_t n : {9, 32, 589}) {
+        test_cases.emplace_back(new test_mul_mat_prec_f32(64,  n, 128));
+        test_cases.emplace_back(new test_mul_mat_prec_f32(60,  n, 180));
+        test_cases.emplace_back(new test_mul_mat_prec_f32(31,  n, 2051));
+    }
     test_cases.emplace_back(new test_mul_mat(GGML_TYPE_F32, GGML_TYPE_F32, 31, 509, 2051, {1, 1}, {1, 1}));
     test_cases.emplace_back(new test_mul_mat(GGML_TYPE_F32, GGML_TYPE_F32, 32, 509, 2112, {1, 1}, {1, 1}));
     test_cases.emplace_back(new test_mul_mat(GGML_TYPE_Q8_0, GGML_TYPE_F32, 32, 509, 2112, {1, 1}, {1, 1}));
