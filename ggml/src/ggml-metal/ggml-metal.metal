@@ -4942,6 +4942,52 @@ kernel void kernel_im2col(
 }
 
 template [[host_name("kernel_im2col_f32")]] kernel im2col_t kernel_im2col<float>;
+
+// One thread per destination element, in destination order: writes are fully coalesced and the
+// kernel does not depend on IC/OH/OW/N being large or small (kernel_im2col maps one threadgroup
+// to each (ic, oh, ow) and strides its writes by CHW*OH*OW).
+template <typename T>
+kernel void kernel_im2col_flat(
+        constant ggml_metal_kargs_im2col & args,
+        device const float * x,
+        device        char * dst,
+        uint3 tgpig[[threadgroup_position_in_grid]],
+        uint3 tpitg[[thread_position_in_threadgroup]],
+        uint3   ntg[[threads_per_threadgroup]]) {
+    const uint64_t i = (uint64_t) tgpig.x*ntg.x + tpitg.x;
+    const uint64_t total = (uint64_t) args.N*args.OH*args.OW*args.CHW;
+    if (i >= total) {
+        return;
+    }
+
+    // 32-bit index math: 64-bit integer division is emulated on Apple GPUs. The host only
+    // dispatches this kernel when every destination index fits in 32 bits.
+    const uint32_t i32 = (uint32_t) i;
+    uint32_t pos = i32 / (uint32_t) args.CHW;
+    const int32_t chw = i32 - pos*args.CHW;
+    const int32_t iow = pos % (uint32_t) args.OW; pos /= (uint32_t) args.OW;
+    const int32_t ioh = pos % (uint32_t) args.OH;
+    const int32_t in  = pos / (uint32_t) args.OH;
+
+    const int32_t iic = chw / args.KHW;
+    const int32_t khw = chw - iic*args.KHW;
+    const int32_t ikh = khw / args.KW;
+    const int32_t ikw = khw - ikh*args.KW;
+
+    const int32_t iiw = iow*args.s0 + ikw*args.d0 - args.p0;
+    const int32_t iih = ioh*args.s1 + ikh*args.d1 - args.p1;
+
+    float v = 0.0f;
+    if (iih >= 0 && iih < args.IH && iiw >= 0 && iiw < args.IW) {
+        v = x[(uint64_t) in*args.ofs0 + (uint64_t) iic*args.ofs1 + (uint64_t) iih*args.ofs2 + (uint64_t) iiw*args.ofs3];
+    }
+    ((device T *) dst)[i] = v;
+}
+
+typedef decltype(kernel_im2col_flat<float>) im2col_flat_t;
+
+template [[host_name("kernel_im2col_flat_f32")]] kernel im2col_flat_t kernel_im2col_flat<float>;
+template [[host_name("kernel_im2col_flat_f16")]] kernel im2col_flat_t kernel_im2col_flat<half>;
 template [[host_name("kernel_im2col_f16")]] kernel im2col_t kernel_im2col<half>;
 
 // TODO: optimize

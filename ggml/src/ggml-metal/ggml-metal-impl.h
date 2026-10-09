@@ -715,6 +715,10 @@ typedef struct {
     int32_t  KH;
     int32_t  KW;
     int32_t  KHW; // KH * KW, pre-computed on CPU to save GPU resources
+    int32_t  OH;
+    int32_t  OW;
+    uint64_t ofs2; // H stride of src1, in floats (kernel_im2col_flat only)
+    uint64_t ofs3; // W stride of src1, in floats (kernel_im2col_flat only)
 } ggml_metal_kargs_im2col;
 
 typedef struct {

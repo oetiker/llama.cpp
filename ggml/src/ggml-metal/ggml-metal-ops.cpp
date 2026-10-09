@@ -3982,11 +3982,26 @@ int ggml_metal_op_im2col(ggml_metal_op_t ctx, int idx) {
         /*.KH   =*/ KH,
         /*.KW   =*/ KW,
         /*.KHW  =*/ KH * KW,
+        /*.OH   =*/ OH,
+        /*.OW   =*/ OW,
+        /*.ofs2 =*/ is_2D ? op->src[1]->nb[1] / 4 : 0,
+        /*.ofs3 =*/ op->src[1]->nb[0] / 4,
     };
 
     auto pipeline = ggml_metal_library_get_pipeline_im2col(lib, op);
 
-    if (KH*KW <= ggml_metal_pipeline_max_theads_per_threadgroup(pipeline)) {
+    if (getenv("GGML_METAL_IM2COL_FLAT") != nullptr) {
+        const uint64_t total = (uint64_t) N * OH * OW * CHW;
+        GGML_ASSERT(total <= UINT32_MAX && "kernel_im2col_flat uses 32-bit indices");
+        const uint64_t ntg   = 256;
+
+        ggml_metal_encoder_set_pipeline(enc, pipeline);
+        ggml_metal_encoder_set_bytes   (enc, &args, sizeof(args), 0);
+        ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(op->src[1]), 1);
+        ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(op),         2);
+
+        ggml_metal_encoder_dispatch_threadgroups(enc, (total + ntg - 1) / ntg, 1, 1, ntg, 1, 1);
+    } else if (KH*KW <= ggml_metal_pipeline_max_theads_per_threadgroup(pipeline)) {
         const uint64_t ntptg0 = std::min(ggml_metal_pipeline_max_theads_per_threadgroup(pipeline)/(KH*KW), N);
 
         ggml_metal_encoder_set_pipeline(enc, pipeline);
