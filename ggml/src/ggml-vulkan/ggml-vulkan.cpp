@@ -4027,10 +4027,13 @@ void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
 vk_device ggml_vk_get_device(size_t idx) {
     VK_LOG_DEBUG("ggml_vk_get_device(" << idx << ")");
 
+    // s2t: backends init on several threads; unlocked check-then-create let them see a half-built device (null VkDevice)
+    static std::mutex init_mutex;
+    std::lock_guard<std::mutex> init_lock(init_mutex);
+
     if (vk_instance.devices[idx] == nullptr) {
         VK_LOG_DEBUG("Initializing new vk_device");
         vk_device device = std::make_shared<vk_device_struct>();
-        vk_instance.devices[idx] = device;
 
         device->memory_logger = std::unique_ptr<vk_memory_logger>(new vk_memory_logger());
 
@@ -4957,6 +4960,8 @@ vk_device ggml_vk_get_device(size_t idx) {
             device->mmvq_mode = 1;
         }
 
+        // s2t: publish only once fully built, so a failed init leaves no half-built device behind
+        vk_instance.devices[idx] = device;
         return device;
     }
 
