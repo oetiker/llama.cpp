@@ -10612,6 +10612,10 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     for (int64_t n : {9, 32}) {
         test_cases.emplace_back(new test_mul_mat_prec_f32(64, n, 128, true));
     }
+    // m, n > 64 so tiled backends pick their large tile: aligned k, unaligned k, strided src1
+    test_cases.emplace_back(new test_mul_mat_prec_f32(256, 589, 128));
+    test_cases.emplace_back(new test_mul_mat_prec_f32(130, 100, 180));
+    test_cases.emplace_back(new test_mul_mat_prec_f32(256, 100, 128, true));
     test_cases.emplace_back(new test_mul_mat(GGML_TYPE_F32, GGML_TYPE_F32, 31, 509, 2051, {1, 1}, {1, 1}));
     test_cases.emplace_back(new test_mul_mat(GGML_TYPE_F32, GGML_TYPE_F32, 32, 509, 2112, {1, 1}, {1, 1}));
     test_cases.emplace_back(new test_mul_mat(GGML_TYPE_Q8_0, GGML_TYPE_F32, 32, 509, 2112, {1, 1}, {1, 1}));
