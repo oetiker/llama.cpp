@@ -5215,23 +5215,35 @@ struct test_mul_mat_prec_f32 : public test_case {
     const int64_t m;
     const int64_t n;
     const int64_t k;
+    const bool strided_b;
 
     std::string vars() override {
-        return VARS_TO_STR3(m, n, k);
+        return VARS_TO_STR4(m, n, k, strided_b);
     }
 
     double max_nmse_err() override {
         return 1e-10;
     }
 
-    test_mul_mat_prec_f32(int64_t m = 64, int64_t n = 32, int64_t k = 128)
-        : m(m), n(n), k(k) {}
+    test_mul_mat_prec_f32(int64_t m = 64, int64_t n = 32, int64_t k = 128, bool strided_b = false)
+        : m(m), n(n), k(k), strided_b(strided_b) {}
 
     ggml_tensor * build_graph(ggml_context * ctx) override {
         ggml_tensor * a = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, k, m);
-        ggml_tensor * b = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, k, n);
         ggml_set_name(a, "a");
-        ggml_set_name(b, "b");
+
+        ggml_tensor * b;
+        if (strided_b) {
+            // rows padded to k + 16: dim 0 stays contiguous (the CPU reference needs nb10 == sizeof(float))
+            // but dims 0/1 do not, so a backend has to copy src1 before a tiled matmul
+            ggml_tensor * b_pad = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, k + 16, n);
+            ggml_set_name(b_pad, "b");
+            b = ggml_view_2d(ctx, b_pad, k, n, b_pad->nb[1], 0);
+            ggml_set_name(b, "b_view");
+        } else {
+            b = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, k, n);
+            ggml_set_name(b, "b");
+        }
 
         ggml_tensor * out = ggml_mul_mat(ctx, a, b);
         ggml_prec_set_src(out, GGML_PREC_F32, 1);
@@ -10592,10 +10604,13 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_mul_mat(GGML_TYPE_F16, GGML_TYPE_F32, 1, 509, 2051, {1, 1}, {1, 1}));
     test_cases.emplace_back(new test_mul_mat(GGML_TYPE_F16, GGML_TYPE_F16, 1, 509, 2051, {1, 1}, {1, 1}));
 
-    for (int64_t n : {9, 32, 589}) {
+    for (int64_t n : {1, 8, 9, 32, 589}) {
         test_cases.emplace_back(new test_mul_mat_prec_f32(64,  n, 128));
         test_cases.emplace_back(new test_mul_mat_prec_f32(60,  n, 180));
         test_cases.emplace_back(new test_mul_mat_prec_f32(31,  n, 2051));
+    }
+    for (int64_t n : {9, 32}) {
+        test_cases.emplace_back(new test_mul_mat_prec_f32(64, n, 128, true));
     }
     test_cases.emplace_back(new test_mul_mat(GGML_TYPE_F32, GGML_TYPE_F32, 31, 509, 2051, {1, 1}, {1, 1}));
     test_cases.emplace_back(new test_mul_mat(GGML_TYPE_F32, GGML_TYPE_F32, 32, 509, 2112, {1, 1}, {1, 1}));
