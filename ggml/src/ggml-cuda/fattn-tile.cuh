@@ -1151,13 +1151,17 @@ static void launch_fattn_tile_switch_ncols1(ggml_backend_cuda_context & ctx, ggm
 
     const int id        = ggml_cuda_get_device();
     const int cc        = ggml_cuda_info().devices[id].cc;
+
+    // swiss2text fork: pick the tile configuration of a 16-query batch for every batch of <= 16 queries,
+    // so decode (1) and verify (k+1) run the same tile shapes (see GGML_CUDA_CC_S2T_BATCH_INVARIANT).
+    const int64_t ne1_sel = GGML_CUDA_CC_S2T_BATCH_INVARIANT(cc) && Q->ne[1] <= 16 ? 16 : Q->ne[1];
     const int warp_size = 32;
 
     constexpr size_t nbytes_shared = 0;
 
 #ifdef GGML_USE_HIP
     if constexpr (DKQ <= 128) {
-        if (Q->ne[1] > 32/ncols2) {
+        if (ne1_sel > 32/ncols2) {
             constexpr int cols_per_block = 64;
             const int nwarps    = ggml_cuda_fattn_tile_get_nthreads (DKQ, DV, cols_per_block, cc) / warp_size;
             const int nbatch_fa = ggml_cuda_fattn_tile_get_nbatch_fa(DKQ, DV, cols_per_block, cc);
@@ -1173,7 +1177,7 @@ static void launch_fattn_tile_switch_ncols1(ggml_backend_cuda_context & ctx, ggm
     if constexpr (DKQ <= 256)
 #endif // GGML_USE_HIP
     {
-        if (Q->ne[1] > 16/ncols2) {
+        if (ne1_sel > 16/ncols2) {
             constexpr int cols_per_block = 32;
             const int nwarps    = ggml_cuda_fattn_tile_get_nthreads (DKQ, DV, cols_per_block, cc) / warp_size;
             const int nbatch_fa = ggml_cuda_fattn_tile_get_nbatch_fa(DKQ, DV, cols_per_block, cc);
@@ -1185,7 +1189,7 @@ static void launch_fattn_tile_switch_ncols1(ggml_backend_cuda_context & ctx, ggm
     }
 
     if constexpr (ncols2 <= 16) {
-        if (Q->ne[1] > 8/ncols2) {
+        if (ne1_sel > 8/ncols2) {
             constexpr int cols_per_block = 16;
             const int nwarps    = ggml_cuda_fattn_tile_get_nthreads (DKQ, DV, cols_per_block, cc) / warp_size;
             const int nbatch_fa = ggml_cuda_fattn_tile_get_nbatch_fa(DKQ, DV, cols_per_block, cc);
@@ -1197,7 +1201,7 @@ static void launch_fattn_tile_switch_ncols1(ggml_backend_cuda_context & ctx, ggm
     }
 
     if constexpr (ncols2 <= 8) {
-        if (Q->ne[1] > 4/ncols2) {
+        if (ne1_sel > 4/ncols2) {
             constexpr int cols_per_block = 8;
             const int nwarps    = ggml_cuda_fattn_tile_get_nthreads (DKQ, DV, cols_per_block, cc) / warp_size;
             const int nbatch_fa = ggml_cuda_fattn_tile_get_nbatch_fa(DKQ, DV, cols_per_block, cc);
@@ -1209,7 +1213,7 @@ static void launch_fattn_tile_switch_ncols1(ggml_backend_cuda_context & ctx, ggm
     }
 
     if constexpr (ncols2 <= 4) {
-        if (Q->ne[1] > 2/ncols2) {
+        if (ne1_sel > 2/ncols2) {
             constexpr int cols_per_block = 4;
             const int nwarps    = ggml_cuda_fattn_tile_get_nthreads (DKQ, DV, cols_per_block, cc) / warp_size;
             const int nbatch_fa = ggml_cuda_fattn_tile_get_nbatch_fa(DKQ, DV, cols_per_block, cc);

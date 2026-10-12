@@ -696,6 +696,12 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
         }
     }
 
+    // swiss2text fork: keep the tile kernel for batches of <= 16 queries so a speculative verify uses
+    // the same kernel as single-token decode (see GGML_CUDA_CC_S2T_BATCH_INVARIANT).
+    if (GGML_CUDA_CC_S2T_BATCH_INVARIANT(cc) && Q->ne[1] <= 16) {
+        return BEST_FATTN_KERNEL_TILE;
+    }
+
     // AMD WMMA is faster than the tile kernel if the wide tiles with high arithmetic intensity can be utilized.
     if ((amd_wmma_available(cc) && gqa_opt_applies && Q->ne[0] <= 256) && Q->ne[0] != 40 && Q->ne[0] != 72 &&
             Q->ne[1] * gqa_ratio_eff > (Q->ne[0] <= 128 ? 8 : 16)) {

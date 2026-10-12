@@ -2,6 +2,12 @@
 
 #define MMVQ_MAX_BATCH_SIZE 8 // Max. batch size for which to use MMVQ kernels.
 
+// swiss2text fork: on the RDNA2 parameter table (RDNA2, RDNA3.5) MMVQ launches 1 warp x 1 row per
+// block for every width, so a row's result does not depend on the batch size. Dense (non-id) mul_mat
+// stays on MMVQ up to this many columns there, so a speculative verify of up to 16 tokens computes
+// its rows exactly as single-token decode does (MMQ sums in a different order).
+#define MMVQ_MAX_BATCH_SIZE_BATCH_INVARIANT 16
+
 bool ggml_cuda_should_use_mmvq(enum ggml_type type, int cc, int64_t ne11);
 
 // Returns the maximum batch size for which MMVQ should be used for MUL_MAT_ID,
