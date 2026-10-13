@@ -2967,7 +2967,7 @@ void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
                                               (use_subgroups16 && w == DMMV_WG_SIZE_LARGE) ? SHADER_REDUCTION_MODE_HYBRID :
                                               SHADER_REDUCTION_MODE_SHMEM;
 
-        for (uint32_t i = 0; i < mul_mat_vec_max_cols; ++i) {
+        for (uint32_t i = 0; i < mul_mat_vec_pipeline_cols; ++i) {
             ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_f32_f32[w][GGML_TYPE_F32 ][i], "mul_mat_vec_f32_f32_f32",  arr_dmmv_f32_f32_f32_len[reduc],  arr_dmmv_f32_f32_f32_data[reduc],  "main", mul_mat_vec_num_bindings, sizeof(vk_mat_vec_push_constants), {1, 1, 1}, {wg_size_subgroup, 1, i+1}, 1, false, use_subgroups, force_subgroup_size);
             ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_f32_f32[w][GGML_TYPE_F16 ][i], "mul_mat_vec_f16_f32_f32",  arr_dmmv_f16_f32_f32_len[reduc],  arr_dmmv_f16_f32_f32_data[reduc],  "main", mul_mat_vec_num_bindings, sizeof(vk_mat_vec_push_constants), {2, 1, 1}, {wg_size_subgroup, 2, i+1}, 1, false, use_subgroups, force_subgroup_size);
             ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_f32_f32[w][GGML_TYPE_BF16][i], "mul_mat_vec_bf16_f32_f32", arr_dmmv_bf16_f32_f32_len[reduc], arr_dmmv_bf16_f32_f32_data[reduc], "main", mul_mat_vec_num_bindings, sizeof(vk_mat_vec_push_constants), {2, 1, 1}, {wg_size_subgroup, 2, i+1}, 1, false, use_subgroups, force_subgroup_size);
@@ -4960,6 +4960,12 @@ vk_device ggml_vk_get_device(size_t idx) {
             device->mmvq_mode = 1;
         }
 
+        // s2t: a speculative verify of k+1 tokens must compute each row exactly as single-token decode
+        // does. On AMD RDNA, batches of up to s2t_batch_invariant_max tokens all take MMVQ, stay on
+        // mul_mat_vec, and use a scalar flash attention configuration whose per-row arithmetic is N-independent.
+        device->s2t_batch_invariant = device->vendor_id == VK_VENDOR_ID_AMD && device->architecture != vk_device_architecture::AMD_GCN;
+        device->mul_mat_vec_max_cols_dispatch = device->s2t_batch_invariant ? s2t_batch_invariant_max : mul_mat_vec_max_cols;
+
         // s2t: publish only once fully built, so a failed init leaves no half-built device behind
         vk_instance.devices[idx] = device;
         return device;
@@ -5560,7 +5566,7 @@ vk_pipeline ggml_vk_get_to_fp16(ggml_backend_vk_context * ctx, ggml_type type) {
 static vk_pipeline ggml_vk_get_dequantize_mul_mat_vec(ggml_backend_vk_context * ctx, ggml_type a_type, ggml_type b_type, uint32_t num_cols, uint32_t m, uint32_t k) {
     VK_LOG_DEBUG("ggml_vk_get_dequantize_mul_mat_vec()");
     GGML_ASSERT(b_type == GGML_TYPE_F32 || b_type == GGML_TYPE_F16 || b_type == GGML_TYPE_Q8_1);
-    GGML_ASSERT(num_cols >= 1 && num_cols <= mul_mat_vec_max_cols);
+    GGML_ASSERT(num_cols >= 1 && num_cols <= ctx->device->mul_mat_vec_max_cols_dispatch);
 
     if (b_type == GGML_TYPE_Q8_1) {
         switch (a_type) {
@@ -6616,6 +6622,13 @@ static bool ggml_vk_should_use_mmvq(const vk_device& device, uint32_t m, uint32_
         return false;
     }
 
+    // s2t: on batch-invariant devices every batch up to s2t_batch_invariant_max takes the batched
+    // decision, so single-token decode also uses MMVQ (q8_1 activations): measured on Radeon 8060S with
+    // Gemma 31B Q8_0, a 9-token verify is ~45% faster on MMVQ than on float mul_mat_vec, decode about even.
+    if (device->s2t_batch_invariant && n <= s2t_batch_invariant_max) {
+        n = 2;
+    }
+
     // q6_k only has 2-byte alignment which makes it somewhat problematic,
     // using MMVQ is only a win on Intel.
     bool mmvq_q6 = device->vendor_id == VK_VENDOR_ID_INTEL;
@@ -7343,7 +7356,7 @@ void ggml_vk_mul_mat(ggml_backend_vk_context * ctx, vk_context& subctx, const st
     } else if (ctx->num_additional_fused_ops == 0 &&
                (src0->type == GGML_TYPE_F32 || src0->type == GGML_TYPE_F16) &&
                (src1->type == GGML_TYPE_F32 || src1->type == GGML_TYPE_F16 || src1->type == GGML_TYPE_BF16 || ggml_is_quantized(src1->type)) &&
-               dst->ne[0] == 1 && dst->ne[1] > mul_mat_vec_max_cols &&
+               dst->ne[0] == 1 && dst->ne[1] > ctx->device->mul_mat_vec_max_cols_dispatch &&
                src0->ne[2] == 1 && src0->ne[3] == 1 &&
                src1->ne[2] == 1 && src1->ne[3] == 1 &&
                ggml_is_contiguous(src0) && ggml_is_contiguous(src1) && ggml_is_contiguous(dst) &&
@@ -7351,7 +7364,9 @@ void ggml_vk_mul_mat(ggml_backend_vk_context * ctx, vk_context& subctx, const st
         ggml_vk_mul_mat_vec_q_f16(ctx, subctx, cgraph, node_idx, true);
     // mul_mat_vec supports batching ne12*ne13 when ne11==1, or treating ne11 as the batch size (up to four)
     // when ne12 and ne13 are one.
-    } else if ((dst->ne[1] == 1 || (dst->ne[1] <= mul_mat_vec_max_cols && src1->ne[2] * src1->ne[3] == 1)) &&
+    // s2t: up to s2t_batch_invariant_max columns on batch-invariant devices, so a speculative verify
+    // runs the same kernel arithmetic per column as single-token decode instead of switching to mul_mm.
+    } else if ((dst->ne[1] == 1 || (dst->ne[1] <= ctx->device->mul_mat_vec_max_cols_dispatch && src1->ne[2] * src1->ne[3] == 1)) &&
                (src0->type == GGML_TYPE_F32 || src0->type == GGML_TYPE_F16 || src0->type == GGML_TYPE_BF16 || ggml_is_quantized(src0->type))) {
         ggml_vk_mul_mat_vec_q_f16(ctx, subctx, cgraph, node_idx);
     } else {
@@ -8175,7 +8190,12 @@ void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx, const
     vk_fa_tuning_params tuning_params = get_fa_tuning_params(ctx->device, HSK, HSV, 512, KV, k_type_eff, v_type_eff, f32acc);
     const uint32_t max_gqa = std::min(tuning_params.block_rows, 32u);
 
-    if (N <= 8 && qk_ratio > 1 && qk_ratio <= max_gqa &&
+    // s2t: on batch-invariant devices up to s2t_batch_invariant_max queries compute every row exactly as
+    // N == 1 does: scalar path with an N-independent per-row setup, no GQA fold, no sparse gather, no mask opt,
+    // and KV split at fixed absolute positions. Only the number of row tiles depends on N.
+    const bool s2t_invariant = ctx->device->s2t_batch_invariant && neq1 <= s2t_batch_invariant_max;
+
+    if (!s2t_invariant && N <= 8 && qk_ratio > 1 && qk_ratio <= max_gqa &&
         qk_ratio * nek2 == neq2 && nek2 == nev2 && nem2 <= 1) {
         // grouped query attention - make the N dimension equal to gqa_ratio, reduce
         // workgroups proportionally in y dimension. The shader will detect gqa_ratio > 1
@@ -8185,7 +8205,13 @@ void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx, const
         workgroups_y /= gqa_ratio;
     }
 
-    tuning_params = get_fa_tuning_params(ctx->device, HSK, HSV, N, KV, k_type_eff, v_type_eff, f32acc);
+    // s2t: tuned for 4 rows (decode, short verifies) or 16 rows; both give subgroup 64, row_split 4,
+    // workgroup 256 and Bc 32, so only Br differs, which only sets how many rows each thread loops over.
+    // KV is the padded cache length (multiple of 256), so a verify crossing a pad boundary sees a larger
+    // KV than single decode at the same position; tune with a fixed n_kv so the setup does not follow it.
+    tuning_params = s2t_invariant
+        ? get_fa_tuning_params_scalar(ctx->device, HSK, HSV, neq1 <= 4 ? 4 : 16, 1024, k_type_eff, v_type_eff, f32acc)
+        : get_fa_tuning_params(ctx->device, HSK, HSV, N, KV, k_type_eff, v_type_eff, f32acc);
 
     float scale         = 1.0f;
     float max_bias      = 0.0f;
@@ -8211,7 +8237,7 @@ void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx, const
         return (t->type != GGML_TYPE_F16 && t->type != GGML_TYPE_BF16) ||
                (t->nb[1] | t->nb[2] | t->nb[3]) % (4 * sizeof(ggml_fp16_t)) == 0;
     };
-    const bool use_sparse = !disable_sparse && n_kv_max > 0 && mask &&
+    const bool use_sparse = !s2t_invariant && !disable_sparse && n_kv_max > 0 && mask &&
                             max_bias == 0.0f && logit_softcap == 0.0f &&
                             (tuning_params.path != FA_COOPMAT2 || (sparse_gather_aligned(k) && sparse_gather_aligned(v))) &&
                             nem0 == KV &&
@@ -8251,7 +8277,8 @@ void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx, const
     }
 
     // Only use mask opt when the mask is fairly large. This hasn't been tuned extensively.
-    bool use_mask_opt = mask && !use_sparse && nem1 >= 32 && nem0 * nem1 > 32768 && nem0 >= tuning_params.block_cols * 16
+    // s2t: mask opt classifies blocks per Br-row tile, which spans different rows for different N
+    bool use_mask_opt = !s2t_invariant && mask && !use_sparse && nem1 >= 32 && nem0 * nem1 > 32768 && nem0 >= tuning_params.block_cols * 16
                         && (ctx->device->architecture != vk_device_architecture::AMD_GCN || HSK > 256 || HSV > 256);
     vk_fa_pipeline_state fa_pipeline_state = get_fa_pipeline_state(ctx->device, tuning_params, HSK, HSV, aligned, f32acc,
                                                                    mask != nullptr, use_mask_opt, logit_softcap != 0, use_sparse, k_type_eff, v_type_eff);
@@ -8302,7 +8329,12 @@ void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx, const
 
     // Try to use split_k when KV is large enough to be worth the overhead.
     // Sparse: split_kv carries n_kv_max, split_k partitions its blocks for occupancy.
-    if (use_sparse) {
+    if (s2t_invariant) {
+        // s2t: split at fixed absolute KV positions so chunk boundaries depend neither on N nor on the
+        // padded KV length. Extra trailing chunks are fully masked and add exact zeros in the reduce.
+        split_kv = s2t_fa_split_kv;
+        split_k = CEIL_DIV(KV, split_kv);
+    } else if (use_sparse) {
         split_kv = (uint32_t)n_kv_max;
         const uint32_t total_blocks = CEIL_DIV((uint32_t)n_kv_max, Bc);
         const uint32_t base_wgs = (gqa_ratio > 1 ? workgroups_x : Tr) * workgroups_y * workgroups_z;
@@ -8322,7 +8354,7 @@ void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx, const
         }
     }
 
-    if (!use_sparse && split_k > 1) {
+    if (!s2t_invariant && !use_sparse && split_k > 1) {
         // Try to evenly split KV into split_k chunks, but it needs to be a multiple
         // of "align", so recompute split_k based on that.
         split_kv = ROUNDUP_POW2(std::max(1u, KV / split_k), alignment);

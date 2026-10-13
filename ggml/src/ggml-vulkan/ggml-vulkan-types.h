@@ -384,6 +384,14 @@ struct vk_queue {
 
 static constexpr uint32_t mul_mat_vec_max_cols = 8;
 
+// s2t: batch-invariant devices (vk_device::s2t_batch_invariant) compute every query/column of a
+// batch of up to this size exactly as a single-token forward does, so mul_mat_vec pipelines exist
+// for up to this many columns; other devices still dispatch at most mul_mat_vec_max_cols.
+static constexpr uint32_t s2t_batch_invariant_max = 16;
+static constexpr uint32_t mul_mat_vec_pipeline_cols = s2t_batch_invariant_max;
+// s2t: flash attention KV chunk length on batch-invariant devices (a multiple of every block_cols)
+static constexpr uint32_t s2t_fa_split_kv = 512;
+
 static constexpr uint32_t p021_max_gqa_ratio = 8;
 
 enum vk_device_architecture {
@@ -743,6 +751,11 @@ struct vk_device_struct {
     // 0: default, 1: force mmvq, -1: disable mmvq
     int32_t mmvq_mode;
 
+    // s2t: AMD RDNA: batches of up to s2t_batch_invariant_max are bit-identical per row to n == 1
+    bool s2t_batch_invariant = false;
+    // s2t: widest batch dispatched to mul_mat_vec (s2t_batch_invariant_max on batch-invariant devices)
+    uint32_t mul_mat_vec_max_cols_dispatch = mul_mat_vec_max_cols;
+
     bool subgroup_size_control;
     uint32_t subgroup_min_size;
     uint32_t subgroup_max_size;
@@ -814,11 +827,11 @@ struct vk_device_struct {
 
     vk_pipeline pipeline_dequant[GGML_TYPE_COUNT];
     vk_pipeline pipeline_dequant_transpose[GGML_TYPE_COUNT]; // fused dequant+transpose for FA quant-KV
-    vk_pipeline pipeline_dequant_mul_mat_vec_f32_f32[DMMV_WG_SIZE_COUNT][GGML_TYPE_COUNT][mul_mat_vec_max_cols];
-    vk_pipeline pipeline_dequant_mul_mat_vec_f16_f32[DMMV_WG_SIZE_COUNT][GGML_TYPE_COUNT][mul_mat_vec_max_cols];
+    vk_pipeline pipeline_dequant_mul_mat_vec_f32_f32[DMMV_WG_SIZE_COUNT][GGML_TYPE_COUNT][mul_mat_vec_pipeline_cols];
+    vk_pipeline pipeline_dequant_mul_mat_vec_f16_f32[DMMV_WG_SIZE_COUNT][GGML_TYPE_COUNT][mul_mat_vec_pipeline_cols];
     vk_pipeline pipeline_dequant_mul_mat_vec_id_f32[DMMV_WG_SIZE_COUNT][GGML_TYPE_COUNT];
 
-    vk_pipeline pipeline_dequant_mul_mat_vec_q8_1_f32[DMMV_WG_SIZE_COUNT][GGML_TYPE_COUNT][mul_mat_vec_max_cols];
+    vk_pipeline pipeline_dequant_mul_mat_vec_q8_1_f32[DMMV_WG_SIZE_COUNT][GGML_TYPE_COUNT][mul_mat_vec_pipeline_cols];
     vk_pipeline pipeline_dequant_mul_mat_vec_id_q8_1_f32[DMMV_WG_SIZE_COUNT][GGML_TYPE_COUNT];
 
     vk_pipeline pipeline_mul_mat_vec_p021_f16_f32[p021_max_gqa_ratio];
