@@ -696,9 +696,9 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
         }
     }
 
-    // swiss2text fork: keep the tile kernel for batches of <= 16 queries so a speculative verify uses
-    // the same kernel as single-token decode (see GGML_CUDA_CC_S2T_BATCH_INVARIANT).
-    if (GGML_CUDA_CC_S2T_BATCH_INVARIANT(cc) && Q->ne[1] <= 16) {
+    // swiss2text fork: keep the tile kernel for batches of <= GGML_CUDA_S2T_BATCH_INVARIANT_MAX queries so a
+    // speculative verify uses the same kernel as single-token decode (see GGML_CUDA_CC_S2T_BATCH_INVARIANT).
+    if (GGML_CUDA_CC_S2T_BATCH_INVARIANT(cc) && Q->ne[1] <= GGML_CUDA_S2T_BATCH_INVARIANT_MAX) {
         return BEST_FATTN_KERNEL_TILE;
     }
 

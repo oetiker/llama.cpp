@@ -1189,6 +1189,8 @@ static void mul_mat_vec_q_switch_ncols_dst(
     }
 
     // Widths above MMVQ_MAX_BATCH_SIZE: dense mul_mat on the RDNA2 table only (ggml_cuda_should_use_mmvq).
+    // swiss2text fork: the cases below must cover every width up to MMVQ_MAX_BATCH_SIZE_BATCH_INVARIANT.
+    static_assert(MMVQ_MAX_BATCH_SIZE_BATCH_INVARIANT == 17, "add launch_batch_invariant cases for the new cap");
     const auto launch_batch_invariant = [&](auto ncols_dst_tag) {
         constexpr int c_ncols_dst = decltype(ncols_dst_tag)::value;
         GGML_ASSERT(!ids && table_id == MMVQ_PARAMETERS_RDNA2);
@@ -1295,6 +1297,7 @@ static void mul_mat_vec_q_switch_ncols_dst(
         case 14: launch_batch_invariant(std::integral_constant<int, 14>{}); break;
         case 15: launch_batch_invariant(std::integral_constant<int, 15>{}); break;
         case 16: launch_batch_invariant(std::integral_constant<int, 16>{}); break;
+        case 17: launch_batch_invariant(std::integral_constant<int, 17>{}); break;
         default:
             GGML_ABORT("fatal error");
             break;

@@ -1192,13 +1192,20 @@ void launch_fattn(
         // parallel_blocks must not be larger than what the tensor size allows:
         parallel_blocks = std::min(parallel_blocks, ntiles_KV);
 
+        // swiss2text fork: parallel_blocks is the KV split of every row (gridDim.y in the kernel, then
+        // flash_attn_combine_results), so on batch-invariant devices it must not follow the number of Q tiles:
+        // size it as for a single Q tile (ntiles_x == 1, as in single-token decode) for every batch of
+        // <= GGML_CUDA_S2T_BATCH_INVARIANT_MAX queries (see GGML_CUDA_CC_S2T_BATCH_INVARIANT).
+        const bool s2t_invariant = GGML_CUDA_CC_S2T_BATCH_INVARIANT(cc) && Q->ne[1] <= GGML_CUDA_S2T_BATCH_INVARIANT_MAX;
+        const int  ntiles_dst_pb = s2t_invariant ? ntiles_dst / ntiles_x : ntiles_dst;
+
         // If ntiles_total % blocks_per_wave != 0 then some efficiency is lost due to tail effects.
         // Test whether parallel_blocks can be set to a higher value for better efficiency.
         const int blocks_per_wave = nsm * max_blocks_per_sm;
         int nwaves_best = 0;
         int efficiency_percent_best = 0;
         for (int parallel_blocks_test = parallel_blocks; parallel_blocks_test <= ntiles_KV; ++parallel_blocks_test) {
-            const int nblocks_total = ntiles_dst * parallel_blocks_test;
+            const int nblocks_total = ntiles_dst_pb * parallel_blocks_test;
             const int nwaves = (nblocks_total + blocks_per_wave - 1) / blocks_per_wave;
             const int efficiency_percent = 100 * nblocks_total / (nwaves*blocks_per_wave);
 

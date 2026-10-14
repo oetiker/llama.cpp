@@ -1152,9 +1152,11 @@ static void launch_fattn_tile_switch_ncols1(ggml_backend_cuda_context & ctx, ggm
     const int id        = ggml_cuda_get_device();
     const int cc        = ggml_cuda_info().devices[id].cc;
 
-    // swiss2text fork: pick the tile configuration of a 16-query batch for every batch of <= 16 queries,
-    // so decode (1) and verify (k+1) run the same tile shapes (see GGML_CUDA_CC_S2T_BATCH_INVARIANT).
-    const int64_t ne1_sel = GGML_CUDA_CC_S2T_BATCH_INVARIANT(cc) && Q->ne[1] <= 16 ? 16 : Q->ne[1];
+    // swiss2text fork: pick the tile configuration of a 16-query batch for every batch of
+    // <= GGML_CUDA_S2T_BATCH_INVARIANT_MAX queries, so decode (1) and verify (k+1) run the same tile shapes
+    // (see GGML_CUDA_CC_S2T_BATCH_INVARIANT). A batch wider than the tile (17) runs as several Q tiles of
+    // that shape; launch_fattn keeps the KV split of a single Q tile for it.
+    const int64_t ne1_sel = GGML_CUDA_CC_S2T_BATCH_INVARIANT(cc) && Q->ne[1] <= GGML_CUDA_S2T_BATCH_INVARIANT_MAX ? 16 : Q->ne[1];
     const int warp_size = 32;
 
     constexpr size_t nbytes_shared = 0;

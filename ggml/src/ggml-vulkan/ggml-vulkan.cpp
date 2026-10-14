@@ -8207,6 +8207,7 @@ void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx, const
 
     // s2t: tuned for 4 rows (decode, short verifies) or 16 rows; both give subgroup 64, row_split 4,
     // workgroup 256 and Bc 32, so only Br differs, which only sets how many rows each thread loops over.
+    // A batch wider than 16 (17) runs as two row tiles of the 16-row configuration.
     // KV is the padded cache length (multiple of 256), so a verify crossing a pad boundary sees a larger
     // KV than single decode at the same position; tune with a fixed n_kv so the setup does not follow it.
     tuning_params = s2t_invariant

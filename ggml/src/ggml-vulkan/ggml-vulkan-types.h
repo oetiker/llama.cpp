@@ -387,7 +387,8 @@ static constexpr uint32_t mul_mat_vec_max_cols = 8;
 // s2t: batch-invariant devices (vk_device::s2t_batch_invariant) compute every query/column of a
 // batch of up to this size exactly as a single-token forward does, so mul_mat_vec pipelines exist
 // for up to this many columns; other devices still dispatch at most mul_mat_vec_max_cols.
-static constexpr uint32_t s2t_batch_invariant_max = 16;
+// 17 = a verify of k = 16 draft tokens.
+static constexpr uint32_t s2t_batch_invariant_max = 17;
 static constexpr uint32_t mul_mat_vec_pipeline_cols = s2t_batch_invariant_max;
 // s2t: flash attention KV chunk length on batch-invariant devices (a multiple of every block_cols)
 static constexpr uint32_t s2t_fa_split_kv = 512;

@@ -4,9 +4,10 @@
 
 // swiss2text fork: on the RDNA2 parameter table (RDNA2, RDNA3.5) MMVQ launches 1 warp x 1 row per
 // block for every width, so a row's result does not depend on the batch size. Dense (non-id) mul_mat
-// stays on MMVQ up to this many columns there, so a speculative verify of up to 16 tokens computes
-// its rows exactly as single-token decode does (MMQ sums in a different order).
-#define MMVQ_MAX_BATCH_SIZE_BATCH_INVARIANT 16
+// stays on MMVQ up to this many columns there, so a speculative verify of up to
+// GGML_CUDA_S2T_BATCH_INVARIANT_MAX tokens computes its rows exactly as single-token decode does
+// (MMQ sums in a different order).
+#define MMVQ_MAX_BATCH_SIZE_BATCH_INVARIANT GGML_CUDA_S2T_BATCH_INVARIANT_MAX
 
 bool ggml_cuda_should_use_mmvq(enum ggml_type type, int cc, int64_t ne11);
 
