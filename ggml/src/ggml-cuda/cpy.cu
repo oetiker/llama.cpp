@@ -464,6 +464,19 @@ void ggml_cuda_cpy(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, gg
 
     size_t mc_width = 0, mc_height = 0, mc_spitch = 0, mc_dpitch = 0;
 
+    // swiss2text fork: on HIP (ROCm 7.1, gfx1151) a hipMemcpy2DAsync captured into a CUDA graph
+    // copies wrong data when the buffers are managed memory (GGML_CUDA_ENABLE_UNIFIED_MEMORY);
+    // run directly, or into hipMalloc memory, it is correct. While capturing, same-type F32/F16
+    // strided copies take the scalar kernel instead -- a copy, so bit-identical either way.
+    bool use_memcpy_2d = true;
+#if defined(GGML_USE_HIP) && defined(USE_CUDA_GRAPH)
+    if (src0->type == GGML_TYPE_F32 || src0->type == GGML_TYPE_F16) {
+        cudaStreamCaptureStatus capture_status;
+        CUDA_CHECK(cudaStreamIsCapturing(main_stream, &capture_status));
+        use_memcpy_2d = capture_status == cudaStreamCaptureStatusNone;
+    }
+#endif // defined(GGML_USE_HIP) && defined(USE_CUDA_GRAPH)
+
     if (src0->type == src1->type && contiguous_srcs) {
         GGML_ASSERT(ggml_nbytes(src0) == ggml_nbytes(src1));
 #if defined(GGML_USE_MUSA) && defined(GGML_MUSA_MUDNN_COPY)
@@ -474,7 +487,7 @@ void ggml_cuda_cpy(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, gg
         {
             CUDA_CHECK(cudaMemcpyAsync(src1_ddc, src0_ddc, ggml_nbytes(src0), cudaMemcpyDeviceToDevice, main_stream));
         }
-    } else if (ggml_cuda_cpy_as_memcpy_2d(src0, src1, mc_width, mc_height, mc_spitch, mc_dpitch)) {
+    } else if (use_memcpy_2d && ggml_cuda_cpy_as_memcpy_2d(src0, src1, mc_width, mc_height, mc_spitch, mc_dpitch)) {
         CUDA_CHECK(cudaMemcpy2DAsync(src1_ddc, mc_dpitch, src0_ddc, mc_spitch,
                                      mc_width, mc_height, cudaMemcpyDeviceToDevice, main_stream));
     } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_F32) {
