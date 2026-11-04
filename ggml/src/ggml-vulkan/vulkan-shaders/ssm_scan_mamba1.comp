@@ -1,0 +1,100 @@
+#version 450
+
+#extension GL_EXT_control_flow_attributes : require
+
+// Mamba-1 selective scan (A has one decay per state and channel, head_dim == 1).
+// Mirrors the Mamba-1 branch of ggml_compute_forward_ssm_scan_f32 (ggml-cpu/ops.cpp):
+// one invocation per (channel, sequence) runs the token loop sequentially with
+// all D_STATE states held in registers. No subgroup operations are used, so the
+// result does not depend on the device subgroup size.
+
+#include "types.glsl"
+
+layout(constant_id = 0) const uint D_STATE    = 16;
+layout(constant_id = 1) const uint BLOCK_SIZE = 64;
+
+layout(local_size_x_id = 1, local_size_y = 1, local_size_z = 1) in;
+
+layout(binding = 0) readonly buffer Src0 { float s0[]; };
+layout(binding = 1) readonly buffer Src1 { float x[]; };
+layout(binding = 2) readonly buffer Src2 { float dt[]; };
+layout(binding = 3) readonly buffer Src3 { float A[]; };
+layout(binding = 4) readonly buffer Src4 { float B[]; };
+layout(binding = 5) readonly buffer Src5 { float C[]; };
+layout(binding = 6) readonly buffer Src6 { int ids[]; };
+layout(binding = 7) buffer Dst { float d[]; };
+
+layout(push_constant) uniform PushConstants {
+    uint nb02; uint nb03; uint nb12; uint nb13;
+    uint nb21; uint nb22; uint nb31;
+    uint nb42; uint nb43; uint nb52; uint nb53;
+    uint s_off;
+    uint n_head;
+    uint d_head;
+    uint n_group;
+    uint n_tok;
+    uint n_seq;
+    uint K;
+};
+
+// same as ggml_compute_softplus_f32
+float softplus(float v) {
+    return (v > 20.0) ? v : log(1.0 + exp(v));
+}
+
+void main() {
+    // head_dim == 1, so a channel is a head
+    const uint h       = gl_GlobalInvocationID.x;
+    const uint seq_idx = gl_WorkGroupID.y;
+
+    if (h >= n_head) {
+        return;
+    }
+
+    const uint g = h / (n_head / n_group); // repeat_interleave
+
+    const uint s0_base_idx = (uint(ids[seq_idx]) * nb03 + h * nb02) / 4;
+    const uint s_base_idx  = (s_off + seq_idx * nb03 + h * nb02) / 4;
+    const uint x_base_idx  = (seq_idx * nb13 + h * 4) / 4;
+    const uint dt_base_idx = (seq_idx * nb22 + h * 4) / 4;
+    const uint A_base_idx  = (h * nb31) / 4;
+    const uint B_base_idx  = (seq_idx * nb43 + g * D_STATE * 4) / 4;
+    const uint C_base_idx  = (seq_idx * nb53 + g * D_STATE * 4) / 4;
+    const uint y_base_idx  = seq_idx * n_tok * n_head + h;
+
+    const uint stride_x  = nb12 / 4;
+    const uint stride_dt = nb21 / 4;
+    const uint stride_B  = nb42 / 4;
+    const uint stride_C  = nb52 / 4;
+    const uint stride_y  = n_head;
+
+    float state[D_STATE];
+    float a[D_STATE];
+
+    [[unroll]] for (uint j = 0; j < D_STATE; j++) {
+        state[j] = s0[s0_base_idx + j];
+        a[j]     = A[A_base_idx + j];
+    }
+
+    for (uint i = 0; i < n_tok; i++) {
+        const float dt_soft_plus = softplus(dt[dt_base_idx + i * stride_dt]);
+        const float x_dt = x[x_base_idx + i * stride_x] * dt_soft_plus;
+
+        float sumf = 0.0f;
+        [[unroll]] for (uint j = 0; j < D_STATE; j++) {
+            const float B_val = B[B_base_idx + i * stride_B + j];
+            const float C_val = C[C_base_idx + i * stride_C + j];
+            // state = prev_state * dA + dB * x
+            state[j] = (state[j] * exp(dt_soft_plus * a[j])) + (B_val * x_dt);
+            // y = rowwise_dotprod(state, C)
+            sumf += state[j] * C_val;
+        }
+
+        d[y_base_idx + i * stride_y] = sumf;
+    }
+
+    // write back the final state (K == 1 for Mamba-1: no rollback snapshots)
+    [[unroll]] for (uint j = 0; j < D_STATE; j++) {
+        d[s_base_idx + j] = state[j];
+    }
+}

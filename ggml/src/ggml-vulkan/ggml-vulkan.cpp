@@ -3777,6 +3777,8 @@ void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
         ggml_vk_create_pipeline(device, device->pipeline_ssm_scan_f32_d128, "ssm_scan_128_f32", ssm_scan_f32_len, ssm_scan_f32_data, "main", 8, sizeof(vk_op_ssm_scan_push_constants), {1, 1, 1}, {128, device->subgroup_size, 16}, 1, true, true);
         ggml_vk_create_pipeline(device, device->pipeline_ssm_scan_f32_d256, "ssm_scan_256_f32", ssm_scan_f32_len, ssm_scan_f32_data, "main", 8, sizeof(vk_op_ssm_scan_push_constants), {1, 1, 1}, {256, device->subgroup_size, 16}, 1, true, true);
     }
+    // Mamba-1 (per-state decay, head_dim 1): one invocation per channel, no subgroup ops.
+    ggml_vk_create_pipeline(device, device->pipeline_ssm_scan_mamba1_f32_d16, "ssm_scan_mamba1_16_f32", ssm_scan_mamba1_f32_len, ssm_scan_mamba1_f32_data, "main", 8, sizeof(vk_op_ssm_scan_push_constants), {64, 1, 1}, {16, 64}, 1, true);
 
     ggml_vk_create_pipeline(device, device->pipeline_ssm_conv_f32,           "ssm_conv_f32",           ssm_conv_f32_len, ssm_conv_f32_data, "main", 4, sizeof(vk_op_ssm_conv_push_constants), {32, 16, 1}, {32, 16, 0, 0}, 1);
     ggml_vk_create_pipeline(device, device->pipeline_ssm_conv_silu_f32,      "ssm_conv_silu_f32",      ssm_conv_f32_len, ssm_conv_f32_data, "main", 4, sizeof(vk_op_ssm_conv_push_constants), {32, 16, 1}, {32, 16, 0, 1}, 1);
@@ -9248,6 +9250,10 @@ static vk_pipeline ggml_vk_op_get_pipeline(ggml_backend_vk_context * ctx, const 
     case GGML_OP_SSM_SCAN:
         if (src0->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32) {
             const uint32_t d_state = src0->ne[0];
+            const bool is_mamba1 = dst->src[3] && dst->src[3]->ne[0] != 1;
+            if (is_mamba1) {
+                return d_state == 16 ? ctx->device->pipeline_ssm_scan_mamba1_f32_d16 : nullptr;
+            }
             if (d_state == 128) {
                 return ctx->device->pipeline_ssm_scan_f32_d128;
             } else if (d_state == 256) {
@@ -10372,8 +10378,9 @@ void ggml_vk_ssm_scan(ggml_backend_vk_context * ctx, vk_context& subctx, ggml_te
     const uint32_t n_tok = src1->ne[2];
     const uint32_t n_seq = src1->ne[3];
 
+    const bool is_mamba1 = (src3->ne[0] != 1);
     bool is_mamba2 = (src3->nb[1] == sizeof(float));
-    GGML_ASSERT(is_mamba2);
+    GGML_ASSERT(is_mamba1 || is_mamba2);
 
     vk_pipeline pipeline = ggml_vk_op_get_pipeline(ctx, src0, src1, src2, dst, dst->op);
     GGML_ASSERT(pipeline != nullptr);
@@ -10403,10 +10410,15 @@ void ggml_vk_ssm_scan(ggml_backend_vk_context * ctx, vk_context& subctx, ggml_te
     std::array<uint32_t, 3> elements;
 
     const uint32_t d_state = src0->ne[0];
-    uint32_t num_subgroups = d_state / ctx->device->subgroup_size;
-    const uint32_t num_workgroups_x = CEIL_DIV(n_head * head_dim, num_subgroups);
-    const uint32_t num_workgroups_y = n_seq;
-    elements = { num_workgroups_x, num_workgroups_y, 1 };
+    if (is_mamba1) {
+        // one invocation per channel (head_dim == 1); wg_denoms[0] divides x into workgroups
+        elements = { n_head * head_dim, n_seq, 1 };
+    } else {
+        uint32_t num_subgroups = d_state / ctx->device->subgroup_size;
+        const uint32_t num_workgroups_x = CEIL_DIV(n_head * head_dim, num_subgroups);
+        const uint32_t num_workgroups_y = n_seq;
+        elements = { num_workgroups_x, num_workgroups_y, 1 };
+    }
 
     ggml_vk_dispatch_pipeline(ctx, subctx, pipeline,
         {src_buf[0], src_buf[1], src_buf[2], src_buf[3], src_buf[4], src_buf[5], src_buf[6], dst_buf},
@@ -16014,7 +16026,33 @@ static bool ggml_backend_vk_device_supports_op(ggml_backend_dev_t dev, const ggm
                 const uint32_t d_state = op->src[0]->ne[0];
                 const uint32_t head_dim = op->src[0]->ne[1];
 
-                bool is_mamba2 = (op->src[3] && op->src[3]->nb[1] == sizeof(float));
+                const ggml_tensor * A = op->src[3];
+                const bool is_mamba1 = (A && A->ne[0] != 1);
+                if (is_mamba1) {
+                    // Mamba-1 shader: d_state 16, head_dim 1, no rollback snapshots (K == 1, as the CPU
+                    // reference requires), contiguous rows for A, x, B and C (indexing assumes them).
+                    for (int i = 1; i < 6; i++) {
+                        if (!op->src[i] || op->src[i]->type != GGML_TYPE_F32) {
+                            return false;
+                        }
+                    }
+                    const ggml_tensor * s0 = op->src[0];
+                    const ggml_tensor * x  = op->src[1];
+                    const ggml_tensor * dt = op->src[2];
+                    const ggml_tensor * B  = op->src[4];
+                    const ggml_tensor * C  = op->src[5];
+                    return d_state == 16 && head_dim == 1 && A->ne[0] == (int64_t) d_state &&
+                           ggml_get_op_params_i32(op, 0) == 1 &&
+                           op->src[6] != nullptr &&
+                           s0->nb[0] == sizeof(float) &&
+                           dt->nb[0] == sizeof(float) &&
+                           A->nb[0] == sizeof(float) &&
+                           x->nb[0] == sizeof(float) && x->nb[1] == sizeof(float) &&
+                           B->nb[0] == sizeof(float) && B->nb[1] == d_state * sizeof(float) &&
+                           C->nb[0] == sizeof(float) && C->nb[1] == d_state * sizeof(float);
+                }
+
+                bool is_mamba2 = (A && A->nb[1] == sizeof(float));
                 if (!is_mamba2) {
                     return false;
                 }
