@@ -6676,7 +6676,7 @@ struct test_conv_2d : public test_case {
     }
 };
 
-// s2t: GGML_OP_CONV_2D with F32 accumulation requested (ggml_prec_set_acc, op_params[6]).
+// s2t: GGML_OP_CONV_2D with F32 accumulation requested (ggml_prec_set_acc, op_params[GGML_CONV_2D_PREC_OP_PARAM]).
 // The tight error bound fails on backends that still stage or accumulate in f16 (Vulkan cm1/cm2).
 struct test_conv_2d_prec_f32 : public test_conv_2d {
     using test_conv_2d::test_conv_2d;

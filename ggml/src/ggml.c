@@ -3307,9 +3307,11 @@ bool ggml_prec_set_acc(
             break;
         case GGML_OP_CONV_2D:
             {
-                // s2t: op_params[0..5] are stride/padding/dilation
+                // s2t: [0..5] are stride/padding/dilation; ggml-cuda (incl. HIP) and ggml-sycl
+                // assert [6] == 0 (a cwhn layout flag they do not support); [7..14] are kept
+                // free for future CONV_2D params, so the precision goes in the last slot.
                 const int32_t prec_i32 = (int32_t) prec;
-                ggml_set_op_params_i32(a, 6, prec_i32);
+                ggml_set_op_params_i32(a, GGML_CONV_2D_PREC_OP_PARAM, prec_i32);
             }
             break;
         default:

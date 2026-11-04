@@ -224,6 +224,7 @@
 #define GGML_MAX_SRC            10
 #define GGML_MAX_N_THREADS      512
 #define GGML_MAX_OP_PARAMS      64
+#define GGML_CONV_2D_PREC_OP_PARAM (GGML_MAX_OP_PARAMS / 4 - 1) // s2t: see ggml_prec_set_acc
 
 #ifndef GGML_MAX_NAME
 #   define GGML_MAX_NAME        64
@@ -1449,7 +1450,14 @@ extern "C" {
     //  - GGML_PREC_Q8   - not allowed
     //  - GGML_PREC_Q4   - not allowed
     //
-    // return false on faliure
+    // supported ops and where the request is stored:
+    //  - GGML_OP_MUL_MAT, GGML_OP_MUL_MAT_ID - op_params[0]
+    //  - GGML_OP_FLASH_ATTN_EXT              - op_params[3]
+    //  - GGML_OP_CONV_2D                     - op_params[GGML_CONV_2D_PREC_OP_PARAM] (= 15, the last slot;
+    //    [0..5] are stride/padding/dilation, [6] must stay 0 for ggml-cuda/HIP and ggml-sycl)
+    //    s2t: honoured by ggml-vulkan (scalar fp32 conv2d instead of the f16 coopmat shaders)
+    //
+    // return false on faliure (any other op)
     GGML_API bool ggml_prec_set_acc(
             struct ggml_tensor * a,
             enum ggml_prec       prec);

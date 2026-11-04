@@ -9355,8 +9355,8 @@ static vk_pipeline ggml_vk_op_get_pipeline(ggml_backend_vk_context * ctx, const 
 
             std::map<vk_conv2d_pipeline_state, vk_pipeline> *pipelines = nullptr;
             if (op == GGML_OP_CONV_2D) {
-                // s2t: GGML_PREC_F32 accumulation (op_params[6]) selects the scalar fp32 pipelines
-                const bool prec_f32 = ggml_get_op_params_i32(dst, 6) == GGML_PREC_F32;
+                // s2t: GGML_PREC_F32 accumulation (ggml_prec_set_acc) selects the scalar fp32 pipelines
+                const bool prec_f32 = ggml_get_op_params_i32(dst, GGML_CONV_2D_PREC_OP_PARAM) == GGML_PREC_F32;
                 if (src0->type == GGML_TYPE_F32) {
                     pipelines = prec_f32 ? &ctx->device->pipeline_conv2d_f32_prec[shape] : &ctx->device->pipeline_conv2d_f32[shape];
                 } else if (src0->type == GGML_TYPE_F16) {
