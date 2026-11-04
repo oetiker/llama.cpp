@@ -3830,6 +3830,12 @@ void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
                 conv2d_BS.CRS);  // CRS block size should be capped at subgroup size for correctness when shuffle is used.
         }
 
+        // s2t: scalar (fp32 shmem, fp32 accumulator) config for the GGML_PREC_F32 conv2d pipelines,
+        // captured before the cm1 overrides below.
+        const uint32_t prec_WG_SIZE = conv2d_WG_SIZE;
+        const uint32_t prec_SHMEM_PAD = conv2d_SHMEM_PAD;
+        vk_conv_block_size prec_BS = conv2d_BS;
+
         // cm1 is used only when cm2 is unavailable; capped at 64x128 (due to shared memory size).
         // Requires 16x16x16 f16-acc since that's the fragment shape hard-coded in the shader.
         // Subgroup size must be 32 or 64 (to keep WG_SIZE sane) and we need
@@ -3941,6 +3947,37 @@ void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
             CREATE_CONVS(_unroll)
         } else {
             CREATE_CONVS( )
+        }
+        {
+            // s2t: GGML_PREC_F32 conv2d pipelines (see pipeline_conv2d_f32_prec).
+            const uint32_t prec_shmem = (prec_BS.K * (prec_BS.CRS + prec_SHMEM_PAD) + prec_BS.CRS * (prec_BS.NPQ + prec_SHMEM_PAD)) * (uint32_t)sizeof(float);
+            if (device->properties.limits.maxComputeSharedMemorySize < prec_shmem) {
+                prec_BS.CRS = 8;
+                if (use_collectives) {
+                    prec_BS.CRS = std::min(device->subgroup_size, prec_BS.CRS);
+                }
+            }
+            const std::array<uint32_t, 3> prec_wg_denoms = { prec_BS.K, 1, 1 };
+            const std::vector<uint32_t> prec_spec_constants = { prec_WG_SIZE, prec_BS.K, prec_BS.CRS, prec_BS.NPQ, conv2d_TS_K, use_collectives, prec_SHMEM_PAD };
+            auto create_conv_prec = [&](std::map<vk_conv2d_pipeline_state, vk_pipeline> & pipelines, const char * name,
+                                        size_t spv_len, const void * spv_data) {
+                for (auto &c : pipelines) {
+                    const vk_conv2d_pipeline_state &state = c.first;
+                    std::vector<uint32_t> spec_constants_cpy = prec_spec_constants;
+                    spec_constants_cpy.insert(spec_constants_cpy.end(), { state.s0, state.s1, state.p0, state.p1, state.d0, state.d1,
+                                                                          state.KW, state.KH, state.aligned, 0u, 16u, 16u });
+                    ggml_vk_create_pipeline(device, c.second, name, spv_len, spv_data, "main", 3,
+                                            sizeof(vk_op_conv2d_push_constants), prec_wg_denoms, spec_constants_cpy, 1, true,
+                                            use_collectives != 0, 0);
+                }
+            };
+            if (conv2d_UNROLL) {
+                create_conv_prec(device->pipeline_conv2d_f32_prec[s], "conv2d_f32_prec", conv2d_f32_unroll_len, conv2d_f32_unroll_data);
+                create_conv_prec(device->pipeline_conv2d_f16_f32_prec[s], "conv2d_f16_f32_prec", conv2d_f16_f32_unroll_len, conv2d_f16_f32_unroll_data);
+            } else {
+                create_conv_prec(device->pipeline_conv2d_f32_prec[s], "conv2d_f32_prec", conv2d_f32_len, conv2d_f32_data);
+                create_conv_prec(device->pipeline_conv2d_f16_f32_prec[s], "conv2d_f16_f32_prec", conv2d_f16_f32_len, conv2d_f16_f32_data);
+            }
         }
 #undef CREATE_CONV
 #undef CREATE_CONVS
@@ -9318,10 +9355,12 @@ static vk_pipeline ggml_vk_op_get_pipeline(ggml_backend_vk_context * ctx, const 
 
             std::map<vk_conv2d_pipeline_state, vk_pipeline> *pipelines = nullptr;
             if (op == GGML_OP_CONV_2D) {
+                // s2t: GGML_PREC_F32 accumulation (op_params[6]) selects the scalar fp32 pipelines
+                const bool prec_f32 = ggml_get_op_params_i32(dst, 6) == GGML_PREC_F32;
                 if (src0->type == GGML_TYPE_F32) {
-                    pipelines = &ctx->device->pipeline_conv2d_f32[shape];
+                    pipelines = prec_f32 ? &ctx->device->pipeline_conv2d_f32_prec[shape] : &ctx->device->pipeline_conv2d_f32[shape];
                 } else if (src0->type == GGML_TYPE_F16) {
-                    pipelines = &ctx->device->pipeline_conv2d_f16_f32[shape];
+                    pipelines = prec_f32 ? &ctx->device->pipeline_conv2d_f16_f32_prec[shape] : &ctx->device->pipeline_conv2d_f16_f32[shape];
                 }
             } else if (op == GGML_OP_CONV_TRANSPOSE_2D) {
                 if (src0->type == GGML_TYPE_F32) {

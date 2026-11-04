@@ -6676,6 +6676,23 @@ struct test_conv_2d : public test_case {
     }
 };
 
+// s2t: GGML_OP_CONV_2D with F32 accumulation requested (ggml_prec_set_acc, op_params[6]).
+// The tight error bound fails on backends that still stage or accumulate in f16 (Vulkan cm1/cm2).
+struct test_conv_2d_prec_f32 : public test_conv_2d {
+    using test_conv_2d::test_conv_2d;
+
+    double max_nmse_err() override {
+        return 1e-10;
+    }
+
+    ggml_tensor * build_graph(ggml_context * ctx) override {
+        ggml_tensor * out = test_conv_2d::build_graph(ctx);
+        GGML_ASSERT(out->op == GGML_OP_CONV_2D);
+        GGML_ASSERT(ggml_prec_set_acc(out, GGML_PREC_F32));
+        return out;
+    }
+};
+
 // GGML_OP_IM2COL + GGML_OP_MUL_MAT
 // the im2col of a BF16 kernel is F32, which puts F32 in src0 and BF16 in src1 of the mul_mat
 struct test_conv_1d_dw : public test_case {
@@ -9952,6 +9969,14 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         test_cases.emplace_back(new test_conv_2d({ 256, 256, 192, 1 }, { 3, 3, 192, 96 }, kernel_type, 1, 1, 1, 1, 1, 1, true));  // bool cwhn = true
     }
     test_cases.emplace_back(new test_conv_2d({ 19, 17, 8, 2 }, { 3, 3, 8, 65 }, GGML_TYPE_F16, 1, 1, 1, 1, 1, 1));
+    // s2t: RE-USE dense block / decoder convs (F x T x C, freq pad 1, time dilation 1..8), plus unaligned shapes
+    for (int dil : {1, 2, 8}) {
+        test_cases.emplace_back(new test_conv_2d_prec_f32({ 243, 103, 64, 1 }, { 3, 3, 64, 64 }, GGML_TYPE_F32, 1, 1, 1, dil, 1, dil));
+    }
+    test_cases.emplace_back(new test_conv_2d_prec_f32({ 243, 103, 256, 1 }, { 3, 3, 256, 64 }, GGML_TYPE_F32, 1, 1, 1, 1, 1, 1));
+    test_cases.emplace_back(new test_conv_2d_prec_f32({ 241, 51, 64, 1 }, { 3, 1, 64, 128 }, GGML_TYPE_F32, 1, 1, 1, 0, 1, 1));
+    test_cases.emplace_back(new test_conv_2d_prec_f32({ 19, 17, 8, 2 }, { 3, 3, 8, 65 }, GGML_TYPE_F32, 1, 1, 1, 1, 1, 1));
+    test_cases.emplace_back(new test_conv_2d_prec_f32({ 19, 17, 16, 3 }, { 3, 3, 16, 33 }, GGML_TYPE_F32, 2, 3, 4, 2, 2, 1));
     test_cases.emplace_back(new test_conv_2d({ 19, 17, 16, 3 }, { 3, 3, 16, 33 }, GGML_TYPE_F16, 2, 3, 4, 2, 2, 1));
     test_cases.emplace_back(new test_conv_2d({ 13, 11, 16, 3 }, { 1, 1, 16, 33 }, GGML_TYPE_F16, 1, 1, 0, 0, 1, 1));
     test_cases.emplace_back(new test_conv_2d({ 19, 17, 8, 2 }, { 3, 3, 8, 17 }, GGML_TYPE_F16, 1, 1, 1, 1, 1, 1, false, 1));

@@ -3305,6 +3305,13 @@ bool ggml_prec_set_acc(
                 ggml_set_op_params_i32(a, 3, prec_i32);
             }
             break;
+        case GGML_OP_CONV_2D:
+            {
+                // s2t: op_params[0..5] are stride/padding/dilation
+                const int32_t prec_i32 = (int32_t) prec;
+                ggml_set_op_params_i32(a, 6, prec_i32);
+            }
+            break;
         default:
             return false;
     };
