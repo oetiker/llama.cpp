@@ -7,6 +7,8 @@
 #include "generic_unary_head.glsl"
 #endif
 
+#include "erf.glsl"
+
 #if defined(UNARY_MUL_FUSION)
 // OP on src1
 layout(constant_id = 1) const bool op_on_b = false;
@@ -120,21 +122,8 @@ float op_softplus(float x) {
 }
 
 float op_gelu_erf(float a) {
-    // based on Abramowitz and Stegun formula 7.1.26 or similar Hastings' approximation
-    const float p_erf  = 0.3275911f;
-    const float a1_erf = 0.254829592f;
-    const float a2_erf = -0.284496736f;
-    const float a3_erf = 1.421413741f;
-    const float a4_erf = -1.453152027f;
-    const float a5_erf = 1.061405429f;
-
     const float SQRT_2_INV = 0.70710678118654752440084436210484f;
-    const float a_div_sqr2 = a * SQRT_2_INV;
-    const float sign_x = sign(a_div_sqr2);
-    const float x = abs(a_div_sqr2);
-    const float t = 1.0f / (1.0f + p_erf * x);
-    const float y = 1.0f - (((((a5_erf * t + a4_erf) * t) + a3_erf) * t + a2_erf) * t + a1_erf) * t * exp(-x * x);
-    return 0.5f * a * (1.0f + sign_x * y);
+    return 0.5f * a * (1.0f + erf_f32(a * SQRT_2_INV));
 }
 
 #if !defined(UNARY_MUL_FUSION)
