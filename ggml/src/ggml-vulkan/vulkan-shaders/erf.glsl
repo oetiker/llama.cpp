@@ -4,7 +4,10 @@
 // erf_f32: accurate f32 erf for the GELU_ERF / GEGLU_ERF shaders.
 // Origin: FreeBSD msun s_erff.c (fdlibm s_erf.c converted to float by Ian Lance
 // Taylor, Cygnus Support). The copy ported here is rust-lang/libm 0.2.16
-// src/math/erff.rs, which carries the same algorithm and constants; the Metal
+// src/math/erff.rs: its constants and branch structure, except that the
+// [0.84375, 1.25) branch uses FreeBSD's erx + P/Q form directly instead of
+// libm's 1 - (1 - erx - P/Q). rust-lang/libm is MIT-licensed; see its
+// LICENSE.txt. The Sun notice below covers the algorithm itself. The Metal
 // backend (ggml-metal/kernels/common.h erf_f32) uses the same port.
 // Replaces the Abramowitz-Stegun 7.1.26 approximation (up to ~6.6e-7 absolute
 // error, no relative precision near 0) so that GELU_ERF on Vulkan tracks the

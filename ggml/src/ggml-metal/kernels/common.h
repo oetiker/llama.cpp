@@ -92,7 +92,10 @@ constant float SQRT_2_INV      = 0.70710678118654752440084436210484f;
 
 // erf: port of FreeBSD msun s_erff.c (fdlibm s_erf.c converted to float by
 // Ian Lance Taylor, Cygnus Support). The copy ported here is rust-lang/libm
-// 0.2.16 src/math/erff.rs, which carries the same algorithm and constants.
+// 0.2.16 src/math/erff.rs: its constants and branch structure, except that the
+// [0.84375, 1.25) branch uses FreeBSD's erx + P/Q form directly instead of
+// libm's 1 - (1 - erx - P/Q). rust-lang/libm is MIT-licensed; see its
+// LICENSE.txt. The Sun notice below covers the algorithm itself.
 // Replaces the Abramowitz-Stegun 7.1.26 approximation (up to ~6.6e-7 absolute error,
 // no relative precision near 0) so that GELU_ERF on Metal tracks the CPU backend.
 // CPU sweep over all finite floats: max 0.97 ulp, and max 1.56 ulp with exp
